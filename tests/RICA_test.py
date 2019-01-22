@@ -21,7 +21,7 @@ import torchvision.transforms as transforms
 
 from torch.utils.data import DataLoader
 
-import os
+import numpy as np
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
@@ -30,7 +30,7 @@ class Rica_Net(nn.Module):
 
     def __init__(self):
         super(Rica_Net, self).__init__()
-        self.linear_ica = ICALinear(32*32, 32*32)
+        self.linear_ica = ICALinear(32*32, 32, ica_strength = 2e-1, super_or_sub = "super")
 
 
     def forward(self, x):
@@ -43,7 +43,7 @@ class Rica_Net(nn.Module):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--batchSz', type=int, default=256)
-    parser.add_argument('--nEpochs', type=int, default=300)
+    parser.add_argument('--nEpochs', type=int, default=20)
     parser.add_argument('--no-cuda', action='store_true')
     parser.add_argument('--save')
     parser.add_argument('--seed', type=int, default=1)
@@ -65,7 +65,7 @@ def main():
     normTransform = transforms.Normalize(normMean, normStd)
 
     trainTransform = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
+        transforms.CenterCrop(32),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         normTransform
@@ -93,8 +93,8 @@ def main():
     if args.cuda:
         net = net.cuda()
 
-    optimizer = optim.SGD(net.parameters(), lr=1e-1,
-                              momentum=0.9, weight_decay=1e-4)
+    optimizer = optim.Adam(net.parameters(), lr=1e-4,
+                              weight_decay=0)
 
 
     for epoch in range(1, args.nEpochs + 1):
@@ -102,25 +102,30 @@ def main():
 
 
     analyze_filters(args, net, testLoader)
+    torch.save(net.state_dict(), "saved_RICA_net.pt")
 
 def analyze_filters(args, net, testLoader):
     """The weights of this net are a 32^2 x 32^2 matrix. We'll visualize a handful.
     We'll also examine the distributions of these filters"""
     histograms = get_test_dists(args, net, testLoader)
-    for idx in range(10):
+    for idx in range(3):
         plt.figure(figsize=(10,5))
-        filt = net.weight[idx,:].view(32,32)
+        filt = net.linear_ica.weight[idx,:].view(32,32)
         plt.subplot(121)
-        plt.imshow(filt)
+        plt.imshow(filt.detach().cpu().numpy())
 
         plt.subplot(122)
-        plt.plot(histograms[idx])
+        x = histograms[idx].detach().cpu().numpy()
+        plt.semilogy(x)
+        xmin = np.where(x>0)[0][0]
+        xmax = np.where(x>0)[0][-1]
+        plt.xlim([xmin,xmax])
         plt.savefig("filter_{}.png".format(idx))
         plt.show()
 
 
 
-def train(args, epoch, net, trainLoader, optimizer, trainF):
+def train(args, epoch, net, trainLoader, optimizer):
     net.train()
 
     for batch_idx, (data, _) in enumerate(trainLoader):
@@ -128,23 +133,24 @@ def train(args, epoch, net, trainLoader, optimizer, trainF):
         if args.cuda:
             data = data.cuda()
         data = Variable(data)
-        data = torch.mean(data, 1).flatten()
+        data = torch.mean(data, 1).view(-1,32**2)
 
         optimizer.zero_grad()
         output = torch.squeeze(net(data))
         # now reconstruct the input
-        data_r = net.linear_ica.weight.t().mm(output)
+        data_r = output.mm(net.linear_ica.weight)
 
         # let's just put the loss right in here
-        loss = F.mse_loss(data,data_r)
+        # optional ICA loss can be added here too
+        mse_loss = F.mse_loss(data,data_r)
+        loss =  mse_loss #+ 1e-1*torch.mean(torch.log(torch.cosh(output)))
 
         loss.backward()
 
         optimizer.step()
 
-
-        print('Train Epoch: Loss: {:.6f}\t'.format(
-            loss.item()))
+        print('Train Epoch {}: Loss: {:.6f}\t'.format(epoch,
+            mse_loss.item()))
 
 
 
@@ -153,12 +159,14 @@ def get_test_dists(args, net, testLoader, n_bins = 1000, maxval = 50):
     histograms = [torch.zeros(n_bins) for channel in range(32**2)]
     for data, target in testLoader:
         if args.cuda:
-            data, target = data.cuda(), target.cuda()
-        data, target = Variable(data, volatile=True), Variable(target)
-        output = torch.squeeze(net(data))
+            data = data.cuda()
+        with torch.no_grad():
+            data = Variable(data)
+            data = torch.mean(data, 1).view(-1,32**2)
+            output = torch.squeeze(net(data))
 
         cpu_output = output.cpu()
-        for channel in range(32**2):
+        for channel in range(32):
             binned = torch.histc(cpu_output[:, channel], bins=n_bins, min=-maxval, max=maxval)
             histograms[channel] = histograms[channel] + torch.squeeze(binned)
     return histograms

@@ -22,7 +22,7 @@ class ICA_Linear(Function):
     The implementation is similar to that of RICA (Le et al., NIPS, 2012): we augment the cost
     function with G(
 
-    Supports finding only super-gaussian source, only sub-gaussian sources, or both"""
+    Supports finding only super-gaussian source, only sub-gaussian sources, or both."""
 
     @staticmethod
     def forward(ctx, input, weight, bias=None, super_or_sub = "both", ica_strength = 1e-4, nonlinearity_g = torch.tanh):
@@ -40,28 +40,27 @@ class ICA_Linear(Function):
     def backward(ctx, grad_output):
         # print('Modified backward')
         input, weight, bias = ctx.saved_variables
-        grad_input = grad_weight = grad_bias = None
+        grad_input = grad_weight = grad_bias = grad_super_or_sub = grad_ica_strength = grad_nonlinearity_g = None
 
         if ctx.needs_input_grad[0]:
             raise(NotImplementedError("No ICA grad wrt input yet"))
             grad_input = grad_output.mm(weight)
         if ctx.needs_input_grad[1]:
-            if ctx.super_or_super == "super":
+            if ctx.super_or_sub == "super":
                 grad_ica = input*torch.sum(ctx.nonlinearity_g(input.mm(weight.t())))
-            elif ctx.super_or_super == "sub":
+            elif ctx.super_or_sub == "sub":
                 grad_ica = -input*torch.sum(ctx.nonlinearity_g(input.mm(weight.t())))
-            elif ctx.super_or_super == "both":
-                # as in ﻿Lee, Girolami, Sejnowski, 1999, Neural Computation
+            elif ctx.super_or_sub == "both":
+                # as in Lee, Girolami, Sejnowski, 1999, Neural Computation
                 s = torch.sign(torch.mean(1/torch.cosh(input)**2)*torch.mean(input**2) -
                                torch.mean(torch.tanh(input)*input))
                 grad_ica = s * input*torch.sum(ctx.nonlinearity_g(input.mm(weight.t())))
 
-            print(grad_ica.size(), input.size())
             grad_weight = grad_output.t().mm(input + ctx.ica_strength * grad_ica)
         if bias is not None and ctx.needs_input_grad[2]:
             grad_bias = grad_output.sum(0).squeeze(0)
 
-        return grad_input, grad_weight, grad_bias
+        return grad_input, grad_weight, grad_bias, grad_super_or_sub, grad_ica_strength, grad_nonlinearity_g
 
 # Alias the apply method of the above
 ica_linear = ICA_Linear.apply
