@@ -30,8 +30,9 @@ class ICA_Linear(Function):
         ctx.ica_strength = ica_strength
         ctx.nonlinearity_g = nonlinearity_g
 
-        ctx.save_for_backward(input, weight, bias)
+        
         output = input.mm(weight.t())
+        ctx.save_for_backward(input, weight, bias, output)
         if bias is not None:
             output += bias.unsqueeze(0).expand_as(output)
         return output
@@ -39,24 +40,44 @@ class ICA_Linear(Function):
     @staticmethod
     def backward(ctx, grad_output):
         # print('Modified backward')
-        input, weight, bias = ctx.saved_variables
+        input, weight, bias, output = ctx.saved_variables
         grad_input = grad_weight = grad_bias = grad_super_or_sub = grad_ica_strength = grad_nonlinearity_g = None
 
         if ctx.needs_input_grad[0]:
-            raise(NotImplementedError("No ICA grad wrt input yet"))
+            raise(NotImplementedError("No ICA grad wrt input yet; question of whether we want to pass g_ICA down"))
             grad_input = grad_output.mm(weight)
         if ctx.needs_input_grad[1]:
             if ctx.super_or_sub == "super":
-                grad_ica = input*torch.sum(ctx.nonlinearity_g(input.mm(weight.t())))
+                grad_ica = ctx.nonlinearity_g(output).t().mm(input)
             elif ctx.super_or_sub == "sub":
-                grad_ica = -input*torch.sum(ctx.nonlinearity_g(input.mm(weight.t())))
+                grad_ica = -ctx.nonlinearity_g(output).t().mm(input)
             elif ctx.super_or_sub == "both":
                 # as in Lee, Girolami, Sejnowski, 1999, Neural Computation
-                s = torch.sign(torch.mean(1/torch.cosh(input)**2)*torch.mean(input**2) -
-                               torch.mean(torch.tanh(input)*input))
-                grad_ica = s * input*torch.sum(ctx.nonlinearity_g(input.mm(weight.t())))
+#                 s = torch.sign(torch.sum(torch.reciprocal(torch.cosh(output)**2),0)*torch.sum(output**2,0) -
+#                                torch.sum(torch.tanh(output)*output,0)).view(-1,1)
+                
+                s  = torch.tensor([ -1.,  -1., -1.,  -1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,
+                         1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,
+                         1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.]).view(-1,1).cuda()
+                grad_ica = s * ctx.nonlinearity_g(output).t().mm(input)
+            elif ctx.super_or_sub == "fastICA":
+                # WARNING implementation could be incorrect
+                beta = torch.sum(output * ctx.nonlinearity_g(output),0)
+                Dp = torch.reciprocal(beta - torch.sum(1-torch.tanh(output)**2,0))
+                D = torch.diag(Dp)
+                middle = torch.diag(-beta) + ctx.nonlinearity_g(output).t().mm(output)
+#                 print("output",output.size(),"beta",beta.size(),"Dp",Dp.size(),"D",D.size(),"middle",middle.size())
+                grad_ica = D.mm(middle).mm(weight)
+                
+                
+                
+            ## Confusing note: right now I'm having to normalize by the batch size
+            ## and also by the output dimension in order to get gradient values
+            ## that agree with those calculated via backpropagation upon the ICA cost
+            ## directly. To be resolved.
+            bs_times_output_dim = grad_output.size()[0]*grad_output.size()[1]
 
-            grad_weight = grad_output.t().mm(input + ctx.ica_strength * grad_ica)
+            grad_weight = grad_output.t().mm(input) + ctx.ica_strength * grad_ica / bs_times_output_dim
         if bias is not None and ctx.needs_input_grad[2]:
             grad_bias = grad_output.sum(0).squeeze(0)
 

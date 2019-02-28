@@ -30,7 +30,7 @@ class Rica_Net(nn.Module):
 
     def __init__(self):
         super(Rica_Net, self).__init__()
-        self.linear_ica = ICALinear(32*32, 32, ica_strength = 2e-1, super_or_sub = "super")
+        self.linear_ica = ICALinear(32*32, 32, ica_strength = 1e-1, super_or_sub = "both")
 
 
     def forward(self, x):
@@ -93,7 +93,7 @@ def main():
     if args.cuda:
         net = net.cuda()
 
-    optimizer = optim.Adam(net.parameters(), lr=1e-4,
+    optimizer = optim.Adam(net.parameters(), lr=1e-3,
                               weight_decay=0)
 
 
@@ -141,16 +141,30 @@ def train(args, epoch, net, trainLoader, optimizer):
         data_r = output.mm(net.linear_ica.weight)
 
         # let's just put the loss right in here
-        # optional ICA loss can be added here too
         mse_loss = F.mse_loss(data,data_r)
-        loss =  mse_loss #+ 1e-1*torch.mean(torch.log(torch.cosh(output)))
-
-        loss.backward()
-
+        mse_loss.backward()
+        
+        nongaussianity = torch.mean(torch.log(torch.cosh(output)))
+        
+#         ## Optional check: same as if you added the ICA term as a cost?
+#         # see that they're similar
+#         g1 = net.linear_ica.weight.grad.detach().clone().cpu().numpy()
+#         print(g1)
+#         optimizer.zero_grad()
+        
+#         # do a forward pass by hand
+#         output = data.mm(net.linear_ica.weight.t())
+#         loss2 = torch.mean(torch.log(torch.cosh(output)))
+#         loss2.backward()
+#         # see that they're similar
+#         g2 = net.linear_ica.weight.grad.detach().clone().cpu().numpy()
+#         print("RICA",g2)
+#         print("ratio",g1/g2)
+        
         optimizer.step()
 
-        print('Train Epoch {}: Loss: {:.6f}\t'.format(epoch,
-            mse_loss.item()))
+        print('Train Epoch {}: Loss: {:.6f},\t Nongaussianity: {:.6f}\t'.format(epoch,
+            mse_loss.item(), nongaussianity.item()))
 
 
 
