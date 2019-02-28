@@ -23,14 +23,14 @@ from torch.utils.data import DataLoader
 
 import numpy as np
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 
 class Rica_Net(nn.Module):
 
-    def __init__(self):
+    def __init__(self, ica_strength = 1e-1):
         super(Rica_Net, self).__init__()
-        self.linear_ica = ICALinear(32*32, 32, ica_strength = 1e-1, super_or_sub = "super")
+        self.linear_ica = ICALinear(32*32, 32, ica_strength = ica_strength, super_or_sub = "super")
 
 
     def forward(self, x):
@@ -44,6 +44,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--batchSz', type=int, default=256)
     parser.add_argument('--nEpochs', type=int, default=20)
+    parser.add_argument('--ica', type=float, default=1e-1)
     parser.add_argument('--no-cuda', action='store_true')
     parser.add_argument('--save')
     parser.add_argument('--seed', type=int, default=1)
@@ -57,7 +58,6 @@ def main():
     torch.manual_seed(args.seed)
     if args.cuda:
         torch.cuda.manual_seed(args.seed)
-
     os.makedirs(args.save, exist_ok=True)
 
     normMean = [0.49139968, 0.48215827, 0.44653124]
@@ -86,7 +86,7 @@ def main():
                      transform=testTransform),
         batch_size=args.batchSz, shuffle=False, **kwargs)
 
-    net = Rica_Net()
+    net = Rica_Net(args.ica)
 
     print('  + Number of params: {}'.format(
         sum([p.data.nelement() for p in net.parameters()])))
@@ -148,20 +148,20 @@ def train(args, epoch, net, trainLoader, optimizer):
         
         ## Optional check: same as if you added the ICA term as a cost?
         # see that they're similar
-        g1 = net.linear_ica.weight.grad.detach().clone().cpu().numpy()
-        print(g1)
-        optimizer.zero_grad()
+#        g1 = net.linear_ica.weight.grad.detach().clone().cpu().numpy()
+#        print(g1)
+#        optimizer.zero_grad()
         
         # do a forward pass by hand
-        output = data.mm(net.linear_ica.weight.t())
-        data_r = output.mm(net.linear_ica.weight)
-        mse_loss = F.mse_loss(data,data_r)
-        loss2 = mse_loss + 1e-1*torch.mean(torch.log(torch.cosh(output)))
-        loss2.backward()
+#        output = data.mm(net.linear_ica.weight.t())
+#        data_r = output.mm(net.linear_ica.weight)
+#        mse_loss = F.mse_loss(data,data_r)
+#        loss2 = mse_loss + 1e-1*torch.mean(torch.log(torch.cosh(output)))
+#        loss2.backward()
         # see that they're similar
-        g2 = net.linear_ica.weight.grad.detach().clone().cpu().numpy()
-        print("RICA",g2)
-        print("ratio",g1/g2)
+#        g2 = net.linear_ica.weight.grad.detach().clone().cpu().numpy()
+#        print("RICA",g2)
+#        print("ratio",g1/g2)
         
         optimizer.step()
 
