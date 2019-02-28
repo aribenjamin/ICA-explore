@@ -30,7 +30,7 @@ class Rica_Net(nn.Module):
 
     def __init__(self):
         super(Rica_Net, self).__init__()
-        self.linear_ica = ICALinear(32*32, 32, ica_strength = 1e-1, super_or_sub = "both")
+        self.linear_ica = ICALinear(32*32, 32, ica_strength = 1e-1, super_or_sub = "super")
 
 
     def forward(self, x):
@@ -140,7 +140,7 @@ def train(args, epoch, net, trainLoader, optimizer):
         # now reconstruct the input
         data_r = output.mm(net.linear_ica.weight)
 
-        # let's just put the loss right in here
+        # the loss
         mse_loss = F.mse_loss(data,data_r)
         mse_loss.backward()
         
@@ -154,7 +154,9 @@ def train(args, epoch, net, trainLoader, optimizer):
         
         # do a forward pass by hand
         output = data.mm(net.linear_ica.weight.t())
-        loss2 = torch.mean(torch.log(torch.cosh(output)))
+        data_r = output.mm(net.linear_ica.weight)
+        mse_loss = F.mse_loss(data,data_r)
+        loss2 = mse_loss + 1e-1*torch.mean(torch.log(torch.cosh(output)))
         loss2.backward()
         # see that they're similar
         g2 = net.linear_ica.weight.grad.detach().clone().cpu().numpy()
