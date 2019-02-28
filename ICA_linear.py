@@ -30,11 +30,17 @@ class ICA_Linear(Function):
         ctx.ica_strength = ica_strength
         ctx.nonlinearity_g = nonlinearity_g
 
-        
-        output = input.mm(weight.t())
+        ## TODO this is a test
+        # Test: does this work if I wrap the linear function?
+        # output = input.mm(weight.t())
+
+        # if bias is not None:
+        #     output += bias.unsqueeze(0).expand_as(output)
+
+        output = torch.nn.functional.linear(input,weight,bias)
+
         ctx.save_for_backward(input, weight, bias, output)
-        if bias is not None:
-            output += bias.unsqueeze(0).expand_as(output)
+
         return output
 
     @staticmethod
@@ -77,7 +83,11 @@ class ICA_Linear(Function):
             ## directly. To be resolved.
             bs_times_output_dim = grad_output.size()[0]*grad_output.size()[1]
 
-            grad_weight = grad_output.t().mm(input) + ctx.ica_strength * grad_ica / bs_times_output_dim
+
+            ## TODO this is a test
+            # grad_weight = grad_output.t().mm(input) + ctx.ica_strength * grad_ica / bs_times_output_dim
+            grad_weight = ctx.ica_strength * grad_ica / bs_times_output_dim
+
         if bias is not None and ctx.needs_input_grad[2]:
             grad_bias = grad_output.sum(0).squeeze(0)
 
