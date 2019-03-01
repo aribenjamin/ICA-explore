@@ -34,30 +34,39 @@ class ICA_Linear(Function):
 
         output = torch.nn.functional.linear(input, weight, bias)
 
-        ctx.save_for_backward(input, weight, bias, output)
+        ctx.save_for_backward(input, weight, bias)
 
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
         # print('Modified backward')
-        input, weight, bias, output = ctx.saved_variables
+        input, weight, bias = ctx.saved_variables
         grad_input = grad_weight = grad_bias = grad_super_or_sub = grad_ica_strength = grad_nonlinearity_g = None
 
-        # an easy way to get the gradient wrt the non-gaussianity is to calculate the
+        # an easy, but slow, way to get the gradient wrt the non-gaussianity is to calculate the
         # nongaussianity, then just call backwards on this.
         # From https://github.com/pytorch/pytorch/issues/1776
-        # (but perhaps isn't maximally efficient; one could calculate the derivative manually)
+        # the catch is that we have to re-compute the output here since the graph will have been freed on output
+        # this is obviously way slower. The alternative is to write out the gradient by hand.
+        # this is fine for the linear, but less trivial in the case of convolution
+        with torch.enable_grad():
+            new_output = torch.nn.functional.linear(input, weight, bias)
+            nongaussianity = torch.sum(torch.log(torch.cosh(new_output)))
 
-        nongaussianity = torch.mean(torch.log(torch.cosh(output)))
-
-        if ctx.needs_input_grad[0]:
-            grad_input = torch.autograd.grad(nongaussianity, input, grad_output)
-        if ctx.needs_input_grad[1]:
-            if ctx.super_or_sub == "super":
-                grad_weight = ctx.ica_strength * torch.autograd.grad(nongaussianity, weight, grad_output)
-            elif ctx.super_or_sub == "sub":
-                grad_weight = -ctx.ica_strength * torch.autograd.grad(nongaussianity, weight, grad_output)
+            if ctx.needs_input_grad[0]:
+                grad_input = torch.autograd.grad(nongaussianity, input, grad_output, only_inputs = True)
+            if ctx.needs_input_grad[1]:
+                if ctx.super_or_sub == "super":
+                    g = torch.autograd.grad(nongaussianity, weight, grad_output,
+                                                                         only_inputs = True)
+                    assert len(g)==1
+                    grad_weight = ctx.ica_strength * g[0]
+                elif ctx.super_or_sub == "sub":
+                    g = torch.autograd.grad(nongaussianity, weight, grad_output,
+                                                                         only_inputs = True)
+                    
+                    grad_weight = -ctx.ica_strength * g[0]
 
 
         return grad_input, grad_weight, grad_bias, grad_super_or_sub, grad_ica_strength, grad_nonlinearity_g
@@ -75,6 +84,7 @@ class ICALinear(Module):
                  super_or_sub="super", ica_strength=1e-4, nonlinearity_g=torch.tanh):
         super(ICALinear, self).__init__()
         self.super_or_sub = super_or_sub
+        print(ica_strength)
         self.ica_strength = ica_strength
         self.nonlinearity_g = nonlinearity_g
         self.in_features = in_features
@@ -85,6 +95,7 @@ class ICALinear(Module):
         else:
             self.register_parameter('bias', None)
         self.reset_parameters()
+        
 
     def reset_parameters(self):
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
