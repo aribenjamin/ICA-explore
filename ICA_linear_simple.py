@@ -7,7 +7,9 @@ from torch.nn.parameter import Parameter
 from torch import functional as F
 from torch.nn import init
 from torch.nn import Module
-#from .._jit_internal import weak_module, weak_script_method # can I leave this off?
+
+
+# from .._jit_internal import weak_module, weak_script_method # can I leave this off?
 
 
 class ICA_Linear(Function):
@@ -25,12 +27,12 @@ class ICA_Linear(Function):
     Supports finding only super-gaussian source, only sub-gaussian sources, or both."""
 
     @staticmethod
-    def forward(ctx, input, weight, bias=None, super_or_sub = "both", ica_strength = 1e-4, nonlinearity_g = torch.tanh):
+    def forward(ctx, input, weight, bias=None, super_or_sub="both", ica_strength=1e-4, nonlinearity_g=torch.tanh):
         ctx.super_or_sub = super_or_sub
         ctx.ica_strength = ica_strength
         ctx.nonlinearity_g = nonlinearity_g
 
-        output = torch.nn.functional.linear(input,weight,bias)
+        output = torch.nn.functional.linear(input, weight, bias)
 
         ctx.save_for_backward(input, weight, bias, output)
 
@@ -42,56 +44,35 @@ class ICA_Linear(Function):
         input, weight, bias, output = ctx.saved_variables
         grad_input = grad_weight = grad_bias = grad_super_or_sub = grad_ica_strength = grad_nonlinearity_g = None
 
+        # an easy way to get the gradient wrt the non-gaussianity is to calculate the
+        # nongaussianity, then just call backwards on this.
+        # From https://github.com/pytorch/pytorch/issues/1776
+        # (but perhaps isn't maximally efficient; one could calculate the derivative manually)
+
+        nongaussianity = torch.mean(torch.log(torch.cosh(output)))
+
         if ctx.needs_input_grad[0]:
-            raise(NotImplementedError("No ICA grad wrt input yet; question of whether we want to pass g_ICA down"))
-            grad_input = ctx.nonlinearity_g(output).t().mm(weight)
+            grad_input = torch.autograd.grad(nongaussianity, input, grad_output)
         if ctx.needs_input_grad[1]:
             if ctx.super_or_sub == "super":
-                grad_ica = ctx.nonlinearity_g(output).t().mm(input)
+                grad_weight = ctx.ica_strength * torch.autograd.grad(nongaussianity, weight, grad_output)
             elif ctx.super_or_sub == "sub":
-                grad_ica = -ctx.nonlinearity_g(output).t().mm(input)
-            elif ctx.super_or_sub == "both":
-                # as in Lee, Girolami, Sejnowski, 1999, Neural Computation
-#                 s = torch.sign(torch.sum(torch.reciprocal(torch.cosh(output)**2),0)*torch.sum(output**2,0) -
-#                                torch.sum(torch.tanh(output)*output,0)).view(-1,1)
-                
-                s  = torch.tensor([ -1.,  -1., -1.,  -1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,
-                         1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.,
-                         1.,  1.,  1.,  1.,  1.,  1.,  1.,  1.]).view(-1,1).cuda()
-                grad_ica = s * ctx.nonlinearity_g(output).t().mm(input)
-            elif ctx.super_or_sub == "fastICA":
-                # WARNING implementation could be incorrect
-                beta = torch.sum(output * ctx.nonlinearity_g(output),0)
-                Dp = torch.reciprocal(beta - torch.sum(1-torch.tanh(output)**2,0))
-                D = torch.diag(Dp)
-                middle = torch.diag(-beta) + ctx.nonlinearity_g(output).t().mm(output)
-#                 print("output",output.size(),"beta",beta.size(),"Dp",Dp.size(),"D",D.size(),"middle",middle.size())
-                grad_ica = D.mm(middle).mm(weight)
+                grad_weight = -ctx.ica_strength * torch.autograd.grad(nongaussianity, weight, grad_output)
 
-                
-            ## Confusing note: right now I'm having to normalize by the batch size
-            ## and also by the output dimension in order to get gradient values
-            ## that agree with those calculated via backpropagation upon the ICA cost
-            ## directly. To be resolved.
-            bs_times_output_dim = grad_output.size()[0]*grad_output.size()[1]
-
-            grad_weight = ctx.ica_strength * grad_ica / bs_times_output_dim
-
-        if bias is not None and ctx.needs_input_grad[2]:
-            grad_bias = grad_output.sum(0).squeeze(0)
 
         return grad_input, grad_weight, grad_bias, grad_super_or_sub, grad_ica_strength, grad_nonlinearity_g
+
 
 # Alias the apply method of the above
 ica_linear = ICA_Linear.apply
 
-#@weak_module
-class ICALinear(Module):
 
+# @weak_module
+class ICALinear(Module):
     __constants__ = ['bias']
 
     def __init__(self, in_features, out_features, bias=True,
-                 super_or_sub = "super", ica_strength = 1e-4, nonlinearity_g = torch.tanh):
+                 super_or_sub="super", ica_strength=1e-4, nonlinearity_g=torch.tanh):
         super(ICALinear, self).__init__()
         self.super_or_sub = super_or_sub
         self.ica_strength = ica_strength
@@ -112,7 +93,8 @@ class ICALinear(Module):
             bound = 1 / math.sqrt(fan_in)
             init.uniform_(self.bias, -bound, bound)
 
-#    @weak_script_method
+            #    @weak_script_method
+
     def forward(self, input):
         return ica_linear(input, self.weight, self.bias,
                           self.super_or_sub, self.ica_strength, self.nonlinearity_g)

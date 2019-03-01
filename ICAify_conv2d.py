@@ -6,7 +6,7 @@ from torch.nn.modules.utils import _single, _pair, _triple
 
 
 
-class Conv2d_Wrapper(Function):
+class ICA_Conv2d(Function):
     """This is the autograd function that underlies the 2d convoltiion + ICA module (Ica_Conv2d).
 
     The forward pass does nothing different than Conv2d; this just wraps the F.conv2d function.
@@ -22,32 +22,41 @@ class Conv2d_Wrapper(Function):
     @staticmethod
     def forward(ctx, input, weight, bias, stride,
                     padding, dilation, groups, nonlinearity_g = torch.tanh):
-        ctx.save_for_backward(input, weight, bias)
-        ctx.nonlinearity_g = nonlinearity_g
-        return F.conv2d(input, weight, bias, stride,
+
+        output = F.conv2d(input, weight, bias, stride,
                           padding, dilation, groups)
+        ctx.save_for_backward(input, weight, bias, output)
+        ctx.nonlinearity_g = nonlinearity_g
+        return output
 
     @staticmethod
     def backward(ctx, grad_output):
 
-        input, weight, bias = ctx.saved_variables
+        input, weight, bias, output = ctx.saved_variables
         grad_input = grad_weight = grad_bias = None
+        grad_stride = grad_padding = grad_dilation = grad_groups = grad_nonlinearity_g = None
 
-        # these checks are here for efficiency.
-        # Returning gradients for inputs that don't require them is not an error.
+        # an easy way to get the gradient wrt the non-gaussianity is to calculate the
+        # nongaussianity, then just call backwards on this.
+        # From https://github.com/pytorch/pytorch/issues/1776
+        # (but perhaps isn't maximally efficient; one could calculate the derivative manually)
+
+        nongaussianity = torch.mean(torch.log(torch.cosh(output)))
+
         if ctx.needs_input_grad[0]:
-            grad_input = grad_output.mm(weight)
+            grad_input = torch.autograd.grad(nongaussianity, input, grad_output)
         if ctx.needs_input_grad[1]:
-            grad_weight = grad_output.t().mm(input (* elementwise product*) ctx.nonlinearity_g(input.mm(weight.t()))
-            # TODO: check if this gradient aligns with that n the RICA paper
-            #TODO implement this as a convolution
-        if bias is not None and ctx.needs_input_grad[2]:
-            grad_bias = grad_output.sum(0).squeeze(0)
+            if ctx.super_or_sub == "super":
+                grad_weight = ctx.ica_strength *torch.autograd.grad(nongaussianity, weight, grad_output)
+            elif ctx.super_or_sub == "sub":
+                grad_weight = -ctx.ica_strength *torch.autograd.grad(nongaussianity, weight, grad_output)
 
-        return grad_input, grad_weight, grad_bias
+        # no change in bias gradient
+
+        return grad_input, grad_weight, grad_bias, grad_stride, grad_padding, grad_dilation, grad_groups, grad_nonlinearity_g
 
 # Alias the apply method of the above
-ica_conv2d = Conv2d_Wrapper.apply
+ica_conv2d = ICA_Conv2d.apply
 
 #@weak_module
 class Ica_Conv2d(_ConvNd):
@@ -65,28 +74,6 @@ class Ica_Conv2d(_ConvNd):
             in_channels, out_channels, kernel_size, stride, padding, dilation,
             False, _pair(0), groups, bias)
 
-    # @weak_script_method
     def forward(self, input):
-        return ica_conv2d(input, self.weight, self.bias, self.stride,
-                        self.padding, self.dilation, self.groups))
-
-
-    # def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-    #              padding=0, output_padding=0, groups=1, bias=True, dilation=1):
-    #     kernel_size = _pair(kernel_size)
-    #     stride = _pair(stride)
-    #     padding = _pair(padding)
-    #     dilation = _pair(dilation)
-    #     output_padding = _pair(output_padding)
-    #     super(ConvTranspose2d, self).__init__(
-    #         in_channels, out_channels, kernel_size, stride, padding, dilation,
-    #         True, output_padding, groups, bias)
-    #
-    # @weak_script_method
-    # def forward(self, input, output_size=None):
-    #     # type: (Tensor, Optional[List[int]]) -> Tensor
-    #     output_padding = self._output_padding(input, output_size, self.stride, self.padding, self.kernel_size)
-    #     return F.conv_transpose2d(
-    #         input, self.weight, self.bias, self.stride, self.padding,
-    #         output_padding, self.groups, self.dilation)
-
+        return F.ica_conv2d(input, self.weight, self.bias, self.stride,
+                        self.padding, self.dilation, self.groups)
