@@ -13,13 +13,8 @@ import torchvision.transforms as transforms
 import os
 import argparse
 
-from models import *
-from utils import progress_bar
 from torch.autograd import Variable
-
 import torchvision.models as models
-
-import squeezenet_model
 import shutil
 
 import setproctitle
@@ -43,11 +38,10 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="2"
 
 
 class Net(nn.Module):
-    def __init__(self, ica_strengths = [1e-1]*4 ):
+    def __init__(self, ica_strengths = [1e-1]*4 + [0]*2):
         super(Net, self).__init__()
 
         self.ica_strengths = ica_strengths
@@ -78,8 +72,13 @@ class Net(nn.Module):
         x = F.max_pool2d(F.relu(x), 2)
 
         x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
+        x = self.fc1(x)
+        nongaussianities += torch.mean(torch.log(torch.cosh(x)))*self.ica_strengths[4]
+
+        x = self.fc2(F.relu(x))
+        nongaussianities += torch.mean(torch.log(torch.cosh(x)))*self.ica_strengths[5]
+
+        
 
         return F.log_softmax(x), nongaussianities
 
@@ -87,18 +86,23 @@ class Net(nn.Module):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--batchSz', type=int, default=256)
-    parser.add_argument('--nEpochs', type=int, default=300)
+    parser.add_argument('--nEpochs', type=int, default=100)
+    parser.add_argument('--card', type=int, default=2)
+
     parser.add_argument('--no-cuda', action='store_true')
     parser.add_argument('--ica', type=float, default=1e-1)
-
+    parser.add_argument('--ica-fc', type=float, default=0)
+    parser.add_argument('--wd', type=float, default=1e-4)
     parser.add_argument('--save')
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--opt', type=str, default='adam',
                         choices=('sgd', 'adam', 'rmsprop', 'sgdw'))
     args = parser.parse_args()
-
+    os.environ["CUDA_VISIBLE_DEVICES"]=str(args.card)
+    
     args.cuda = not args.no_cuda and torch.cuda.is_available()
     args.save = args.save or 'error.csv'
+
 
     torch.manual_seed(args.seed)
     if args.cuda:
@@ -123,7 +127,7 @@ def main():
         normTransform
     ])
 
-    kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+    kwargs = {'num_workers': 4, 'pin_memory': True} if args.cuda else {}
     trainLoader = DataLoader(
         dset.CIFAR10(root='./data', train=True, download=True,
                      transform=trainTransform),
@@ -134,7 +138,7 @@ def main():
                      transform=testTransform),
         batch_size=args.batchSz, shuffle=False, **kwargs)
 
-    net = Net([args.ica]*4)
+    net = Net([args.ica]*4 + [args.ica_fc]*2)
 
     print('  + Number of params: {}'.format(
         sum([p.data.nelement() for p in net.parameters()])))
@@ -146,7 +150,7 @@ def main():
         optimizer = optim.SGD(net.parameters(), lr=1e-1,
                             momentum=0.9, weight_decay=1e-4)
     elif args.opt == 'adam':
-        optimizer = optim.Adam(net.parameters(), weight_decay=1e-4)
+        optimizer = optim.Adam(net.parameters(), weight_decay=args.wd)
     elif args.opt == 'rmsprop':
         optimizer = optim.RMSprop(net.parameters(), weight_decay=1e-4)
         
@@ -159,7 +163,6 @@ def main():
         train(args, epoch, net, trainLoader, optimizer, trainF)
         test(args, epoch, net, testLoader, optimizer, testF)
         torch.save(net, os.path.join(args.save, 'latest.pth'))
-        os.system('./plot.py {} &'.format(args.save))
 
     trainF.close()
     testF.close()
@@ -176,8 +179,8 @@ def train(args, epoch, net, trainLoader, optimizer, trainF):
         
         
         optimizer.zero_grad()
-        output = torch.squeeze(net(data))
-        loss = F.nll_loss(output, target)
+        output, nongaussianity = net(data)
+        loss = F.nll_loss(torch.squeeze(output), target) + nongaussianity
         loss.backward()
         
         optimizer.step()
@@ -185,7 +188,7 @@ def train(args, epoch, net, trainLoader, optimizer, trainF):
         nProcessed += len(data)
         pred = output.data.max(1)[1] # get the index of the max log-probability
         incorrect = pred.ne(target.data).cpu().sum()
-        err = 100.*incorrect/len(data)
+        err = 100.*incorrect/float(len(data))
         partialEpoch = epoch + batch_idx / len(trainLoader) - 1
         print('Train Epoch: {:.2f} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tError: {:.6f}'.format(
             partialEpoch, nProcessed, nTrain, 100. * batch_idx / len(trainLoader),
@@ -201,16 +204,17 @@ def test(args, epoch, net, testLoader, optimizer, testF):
     for data, target in testLoader:
         if args.cuda:
             data, target = data.cuda(), target.cuda()
-        data, target = Variable(data, volatile=True), Variable(target)
-        output = torch.squeeze(net(data))
-        test_loss += F.nll_loss(output, target).data[0]
+        with torch.no_grad():
+            data, target = Variable(data), Variable(target)
+            output, _ = net(data)
+        test_loss += F.nll_loss(torch.squeeze(output), target).data.item()
         pred = output.data.max(1)[1] # get the index of the max log-probability
         incorrect += pred.ne(target.data).cpu().sum()
 
     test_loss = test_loss
-    test_loss /= len(testLoader) # loss function already averages over batch size
+    test_loss /= float(len(testLoader)) # loss function already averages over batch size
     nTotal = len(testLoader.dataset)
-    err = 100.*incorrect/nTotal
+    err = 100.*incorrect/float(nTotal)
     print('\nTest set: Average loss: {:.4f}, Error: {}/{} ({:.0f}%)\n'.format(
         test_loss, incorrect, nTotal, err))
 
