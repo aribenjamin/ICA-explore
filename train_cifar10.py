@@ -1,5 +1,5 @@
-'''Train CIFAR10 with PyTorch.'''
-from __future__ import print_function
+#!/usr/bin/env python
+# from __future__ import print_function
 
 import torch
 import torch.nn as nn
@@ -39,6 +39,7 @@ from torch.utils.data import DataLoader
 
 import os
 
+from orion.client import report_results
 
 class Net(nn.Module):
     def __init__(self, ica_strengths = [1e-1]*4 + [0]*2):
@@ -161,11 +162,16 @@ def main():
     for epoch in range(1, args.nEpochs + 1):
         adjust_opt(args.opt, optimizer, epoch)
         train(args, epoch, net, trainLoader, optimizer, trainF)
-        test(args, epoch, net, testLoader, optimizer, testF)
+        test_error_rate = test(args, epoch, net, testLoader, optimizer, testF)
         torch.save(net, os.path.join(args.save, 'latest.pth'))
 
     trainF.close()
     testF.close()
+
+    report_results([dict(
+        name='test_error_rate',
+        type='objective',
+        value=test_error_rate)])
 
 def train(args, epoch, net, trainLoader, optimizer, trainF):
     net.train()
@@ -220,6 +226,8 @@ def test(args, epoch, net, testLoader, optimizer, testF):
 
     testF.write('{},{},{}\n'.format(epoch, test_loss, err))
     testF.flush()
+
+    return float(incorrect)/float(nTotal)
 
 def adjust_opt(optAlg, optimizer, epoch):
     if epoch == 150 or epoch == 225: 
